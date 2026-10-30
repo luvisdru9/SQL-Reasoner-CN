@@ -1,0 +1,50 @@
+seed: 42
+model_id: Qwen/Qwen3-4B-Instruct-2507
+sft_adapter: checkpoints/sft
+output_dir: checkpoints/grpo
+data:
+  train: data/processed/cspider/grpo_train.jsonl
+training:
+  max_steps: 200
+  # vLLM weight sync requires full-shaped policy weights. Keep the SFT stage
+  # in QLoRA, but load the base in BF16 for GRPO and continue training its LoRA.
+  load_in_4bit: false
+  # Four candidates still form one GRPO group/effective update. Calibration on
+  # this host found 2/2 materially faster than 1/4; 4/1 was only ~1.5% faster
+  # than 2/2 in a two-step smoke, so 2/2 keeps more worst-case length headroom.
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.05
+  max_prompt_length: 1664
+  max_completion_length: 384
+  report_to: tensorboard
+  save_steps: 10
+  save_total_limit: 3
+  resume_from_checkpoint: auto
+generation:
+  num_generations: 4
+  generation_batch_size: 4
+  temperature: 0.8
+  top_p: 0.95
+algorithm:
+  loss_type: dapo
+  epsilon: 0.2
+  epsilon_high: 0.28
+  mask_truncated_completions: true
+  beta: 0.0
+  scale_rewards: group
+  importance_sampling_level: token
+rewards:
+  format: 0.05
+  safe_sql: 0.10
+  schema: 0.15
+  plan_consistency: 0.10
+  execution: 1.00
+vllm:
+  enabled: true
+  mode: server
+  host: 127.0.0.1
+  port: 8000
+  timeout: 240.0
+

@@ -1,0 +1,4 @@
+# Install a CUDA-compatible PyTorch build first when the pinned PyPI wheel does
+# not match the local CUDA driver. Then install this file.
+-e .[train,demo,eval]
+

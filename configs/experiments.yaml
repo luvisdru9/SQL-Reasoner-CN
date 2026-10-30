@@ -1,0 +1,240 @@
+suite: sql_reasoner_cn_v1
+model_id: Qwen/Qwen3-4B-Instruct-2507
+
+base_configs:
+  sft: configs/sft.yaml
+  rl: configs/grpo.yaml
+
+paths:
+  checkpoint_root: checkpoints/experiments
+  output_root: outputs/experiments
+  rl_data: data/processed/cspider/grpo_train_sql_reasoner_cn_v1.jsonl
+
+rl_selection:
+  input: data/processed/cspider/train.jsonl
+  stats_output: data/processed/cspider/grpo_train_sql_reasoner_cn_v1.stats.json
+  candidates: 4
+  max_new_tokens: 384
+  limit: 500
+  max_scan: 2000
+  strategy: variance
+  seed: 42
+
+evaluation:
+  tuning: data/processed/cspider/validation.jsonl
+  final: data/processed/cspider/official_dev.jsonl
+
+# These profiles must be calibrated independently before formal experiments;
+# the committed values are safe defaults. Locked values may not be overridden
+# by an experiment. To study one, create and smoke test a new resource profile,
+# then compare algorithms only within that profile.
+resource_profiles:
+  sft_2x3090_24g:
+    stage: sft
+    launch:
+      num_processes: 2
+    locked:
+      model_id: Qwen/Qwen3-4B-Instruct-2507
+      lora.r: 32
+      lora.target_modules: all-linear
+      training.per_device_batch_size: 1
+      training.gradient_accumulation_steps: 8
+      training.max_length: 2048
+      training.packing: true
+    tunable:
+      - seed
+      - lora.alpha
+      - lora.dropout
+      - training.learning_rate
+      - training.warmup_ratio
+      - training.epochs
+
+  rl_1x3090_train_1x3090_rollout:
+    stage: rl
+    env:
+      TRAIN_GPU: "0"
+      ROLLOUT_GPU: "1"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.72"
+      VLLM_ENFORCE_EAGER: "1"
+    locked:
+      model_id: Qwen/Qwen3-4B-Instruct-2507
+      training.load_in_4bit: false
+      training.per_device_batch_size: 2
+      training.gradient_accumulation_steps: 2
+      training.max_prompt_length: 1664
+      training.max_completion_length: 384
+      generation.num_generations: 4
+      generation.generation_batch_size: 4
+      training.max_steps: 200
+    tunable:
+      - seed
+      - training.learning_rate
+      - training.warmup_ratio
+      - generation.temperature
+      - generation.top_p
+      - algorithm.loss_type
+      - algorithm.epsilon
+      - algorithm.epsilon_high
+      - algorithm.mask_truncated_completions
+      - algorithm.beta
+      - algorithm.scale_rewards
+      - algorithm.importance_sampling_level
+      - rewards.format
+      - rewards.safe_sql
+      - rewards.schema
+      - rewards.plan_consistency
+      - rewards.execution
+
+# `groups` let us run a small, interpretable subset instead of an expensive
+# Cartesian grid. The default action of run_experiments.py is only to list.
+experiments:
+  base:
+    stage: base
+    groups: [core]
+
+  sft_default:
+    stage: sft
+    resource_profile: sft_2x3090_24g
+    compare_to: base
+    groups: [core, sft_lr]
+    overrides: {}
+
+  rl_grpo:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: sft_default
+    groups: [core]
+    overrides:
+      algorithm.loss_type: grpo
+      algorithm.epsilon: 0.2
+      algorithm.epsilon_high: 0.2
+      algorithm.mask_truncated_completions: false
+
+  rl_dapo_loss:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_grpo
+    groups: [core]
+    overrides:
+      algorithm.loss_type: dapo
+      algorithm.epsilon: 0.2
+      algorithm.epsilon_high: 0.2
+      algorithm.mask_truncated_completions: false
+
+  rl_dapo_clip:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_loss
+    groups: [core]
+    overrides:
+      algorithm.loss_type: dapo
+      algorithm.epsilon: 0.2
+      algorithm.epsilon_high: 0.28
+      algorithm.mask_truncated_completions: false
+
+  rl_dapo_components:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_clip
+    groups: [core, rl_lr, rl_temperature]
+    overrides:
+      algorithm.loss_type: dapo
+      algorithm.epsilon: 0.2
+      algorithm.epsilon_high: 0.28
+      algorithm.mask_truncated_completions: true
+
+  sft_lr_1e4:
+    stage: sft
+    resource_profile: sft_2x3090_24g
+    compare_to: sft_default
+    groups: [sft_lr]
+    overrides:
+      training.learning_rate: 1.0e-4
+
+  sft_lr_3e4:
+    stage: sft
+    resource_profile: sft_2x3090_24g
+    compare_to: sft_default
+    groups: [sft_lr]
+    overrides:
+      training.learning_rate: 3.0e-4
+
+  rl_lr_5e6:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_lr]
+    overrides:
+      training.learning_rate: 5.0e-6
+
+  rl_lr_2e5:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_lr]
+    overrides:
+      training.learning_rate: 2.0e-5
+
+  rl_temp_06:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_temperature]
+    overrides:
+      generation.temperature: 0.6
+
+  rl_temp_10:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_temperature]
+    overrides:
+      generation.temperature: 1.0
+
+  rl_reward_execution_only:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_reward]
+    overrides:
+      rewards.format: 0.0
+      rewards.safe_sql: 0.0
+      rewards.schema: 0.0
+      rewards.plan_consistency: 0.0
+      rewards.execution: 1.0
+
+  rl_reward_no_plan:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    compare_to: rl_dapo_components
+    groups: [rl_reward]
+    overrides:
+      rewards.plan_consistency: 0.0
+
+  # These two runs inherit the selected RL policy in run_campaign.py. They are
+  # confirmation repeats only: their seeds are never searched or cherry-picked.
+  rl_seed_7:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    groups: [rl_confirmation]
+    overrides:
+      seed: 7
+
+  rl_seed_123:
+    stage: rl
+    resource_profile: rl_1x3090_train_1x3090_rollout
+    depends_on: sft_default
+    groups: [rl_confirmation]
+    overrides:
+      seed: 123
